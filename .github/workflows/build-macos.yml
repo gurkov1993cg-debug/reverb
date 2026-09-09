@@ -40,6 +40,10 @@ jobs:
             echo "JUCE reference found in active source/build files. Steinberg-only rule violated."
             exit 1
           fi
+          if grep -RniE 'Steinberg::k(LittleEndian|BigEndian)|Steinberg::Vst::IPlugView' project/Source/Plugin; then
+            echo "Stale/invalid Steinberg API spellings found in project package."
+            exit 1
+          fi
           echo "Project package extracted; active code is JUCE-free"
 
       - name: Fetch Steinberg VST3 SDK 3.8.1
@@ -57,6 +61,63 @@ jobs:
           test "$(git rev-parse HEAD)" = "$VST3SDK_COMMIT"
           grep -q 'VERSION 3.8.1' CMakeLists.txt
 
+      - name: Configure NEXUSPACE Steinberg VST3
+        shell: bash
+        run: |
+          cmake -S project -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13 \
+            -DVST3_SDK_ROOT="$RUNNER_TEMP/vst3sdk"
+
+      - name: Syntax-check NEXUSPACE sources first
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, shlex, subprocess, sys
+
+          db_path = pathlib.Path("build/compile_commands.json")
+          if not db_path.is_file():
+              raise SystemExit("compile_commands.json was not generated")
+
+          commands = json.loads(db_path.read_text())
+          selected = []
+          for entry in commands:
+              src = pathlib.Path(entry.get("file", ""))
+              s = str(src)
+              if "/project/Source/Plugin/" in s or s.endswith("/project/Source/DSP/NxReverbEngine.cpp"):
+                  selected.append(entry)
+
+          if not selected:
+              raise SystemExit("No NEXUSPACE source compile commands found")
+
+          print(f"Syntax-checking {len(selected)} NEXUSPACE translation units before SDK build...")
+          for entry in selected:
+              if "arguments" in entry:
+                  args = list(entry["arguments"])
+              else:
+                  args = shlex.split(entry["command"])
+
+              out = []
+              skip = False
+              for i, arg in enumerate(args):
+                  if skip:
+                      skip = False
+                      continue
+                  if arg == "-c":
+                      continue
+                  if arg == "-o":
+                      skip = True
+                      continue
+                  out.append(arg)
+              out.append("-fsyntax-only")
+
+              print("CHECK", entry["file"])
+              subprocess.run(out, cwd=entry["directory"], check=True)
+          PY
+
       - name: Configure DSP tests
         shell: bash
         run: |
@@ -72,15 +133,6 @@ jobs:
       - name: Run DSP tests
         shell: bash
         run: ctest --test-dir build-tests -C Release --output-on-failure
-
-      - name: Configure NEXUSPACE Steinberg VST3
-        shell: bash
-        run: |
-          cmake -S project -B build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_OSX_ARCHITECTURES=x86_64 \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13 \
-            -DVST3_SDK_ROOT="$RUNNER_TEMP/vst3sdk"
 
       - name: Build NEXUSPACE VST3
         shell: bash
