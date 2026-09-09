@@ -12,11 +12,12 @@ jobs:
   build-macos-intel:
     name: Build macOS Intel VST3
     runs-on: macos-15-intel
-    timeout-minutes: 30
+    timeout-minutes: 35
 
     env:
       MACOSX_DEPLOYMENT_TARGET: "10.13"
       CMAKE_BUILD_PARALLEL_LEVEL: "4"
+      VST3SDK_COMMIT: "3cdf9ca5d1f5b1b21e0a86832aa4abe55607bd96"
 
     steps:
       - name: Checkout reverb
@@ -34,12 +35,27 @@ jobs:
           test -d project/Source/DSP
           test -d project/Source/Plugin
           test -f project/Tests/CMakeLists.txt
-          echo "Project package extracted successfully"
+          test -f project/Resources/NEXUSPACE.uidesc
+          if grep -Rni --exclude-dir=Design --exclude='*.md' 'JUCE' project/Source project/CMakeLists.txt; then
+            echo "JUCE reference found in active source/build files. Steinberg-only rule violated."
+            exit 1
+          fi
+          echo "Project package extracted; active code is JUCE-free"
 
-      - name: Fetch JUCE wrapper dependency
+      - name: Fetch Steinberg VST3 SDK 3.8.1
         shell: bash
         run: |
-          git clone --depth 1 --branch 8.0.15 https://github.com/juce-framework/JUCE.git "$RUNNER_TEMP/JUCE"
+          set -euo pipefail
+          SDK="$RUNNER_TEMP/vst3sdk"
+          rm -rf "$SDK"
+          git init "$SDK"
+          cd "$SDK"
+          git remote add origin https://github.com/steinbergmedia/vst3sdk.git
+          git fetch --depth 1 origin "$VST3SDK_COMMIT"
+          git checkout --detach FETCH_HEAD
+          git submodule update --init --recursive --depth 1
+          test "$(git rev-parse HEAD)" = "$VST3SDK_COMMIT"
+          grep -q 'VERSION 3.8.1' CMakeLists.txt
 
       - name: Configure DSP tests
         shell: bash
@@ -57,20 +73,20 @@ jobs:
         shell: bash
         run: ctest --test-dir build-tests -C Release --output-on-failure
 
-      - name: Configure NEXUSPACE VST3
+      - name: Configure NEXUSPACE Steinberg VST3
         shell: bash
         run: |
           cmake -S project -B build \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_ARCHITECTURES=x86_64 \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13 \
-            -DJUCE_DIR="$RUNNER_TEMP/JUCE"
+            -DVST3_SDK_ROOT="$RUNNER_TEMP/vst3sdk"
 
       - name: Build NEXUSPACE VST3
         shell: bash
-        run: cmake --build build --config Release --target NEXUSPACE_VST3 --parallel 4
+        run: cmake --build build --config Release --target NEXUSPACE --parallel 4
 
-      - name: Verify Intel binary and deployment target
+      - name: Verify Intel VST3 binary
         shell: bash
         run: |
           set -euo pipefail
@@ -90,6 +106,7 @@ jobs:
       - name: Package constant build artifact
         shell: bash
         run: |
+          set -euo pipefail
           rm -f NEXUSPACE-macOS.zip NEXUSPACE-macOS.sha256
           ditto -c -k --sequesterRsrc --keepParent "$PLUGIN_PATH" NEXUSPACE-macOS.zip
           shasum -a 256 NEXUSPACE-macOS.zip > NEXUSPACE-macOS.sha256
