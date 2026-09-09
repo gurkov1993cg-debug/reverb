@@ -20,7 +20,21 @@ jobs:
 
     steps:
       - name: Checkout reverb
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      - name: Extract project package
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f reverb.zip
+          rm -rf project
+          mkdir project
+          unzip -q -o reverb.zip -d project
+          test -f project/CMakeLists.txt
+          test -d project/Source/DSP
+          test -d project/Source/Plugin
+          test -f project/Tests/CMakeLists.txt
+          echo "Project package extracted successfully"
 
       - name: Fetch JUCE wrapper dependency
         shell: bash
@@ -30,7 +44,7 @@ jobs:
       - name: Configure DSP tests
         shell: bash
         run: |
-          cmake -S Tests -B build-tests \
+          cmake -S project/Tests -B build-tests \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_ARCHITECTURES=x86_64 \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13
@@ -46,7 +60,7 @@ jobs:
       - name: Configure NEXUSPACE VST3
         shell: bash
         run: |
-          cmake -S . -B build \
+          cmake -S project -B build \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_ARCHITECTURES=x86_64 \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13 \
@@ -76,7 +90,7 @@ jobs:
       - name: Package constant build artifact
         shell: bash
         run: |
-          rm -f NEXUSPACE-macOS.zip
+          rm -f NEXUSPACE-macOS.zip NEXUSPACE-macOS.sha256
           ditto -c -k --sequesterRsrc --keepParent "$PLUGIN_PATH" NEXUSPACE-macOS.zip
           shasum -a 256 NEXUSPACE-macOS.zip > NEXUSPACE-macOS.sha256
 
