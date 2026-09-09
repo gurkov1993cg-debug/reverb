@@ -1,1 +1,91 @@
+name: NEXUSPACE macOS
 
+"on":
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-macos-intel:
+    name: Build macOS Intel VST3
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "10.13"
+      CMAKE_BUILD_PARALLEL_LEVEL: "4"
+
+    steps:
+      - name: Checkout reverb
+        uses: actions/checkout@v4
+
+      - name: Fetch JUCE wrapper dependency
+        shell: bash
+        run: |
+          git clone --depth 1 --branch 8.0.15 https://github.com/juce-framework/JUCE.git "$RUNNER_TEMP/JUCE"
+
+      - name: Configure DSP tests
+        shell: bash
+        run: |
+          cmake -S Tests -B build-tests \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13
+
+      - name: Build DSP tests
+        shell: bash
+        run: cmake --build build-tests --config Release --parallel 4
+
+      - name: Run DSP tests
+        shell: bash
+        run: ctest --test-dir build-tests -C Release --output-on-failure
+
+      - name: Configure NEXUSPACE VST3
+        shell: bash
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13 \
+            -DJUCE_DIR="$RUNNER_TEMP/JUCE"
+
+      - name: Build NEXUSPACE VST3
+        shell: bash
+        run: cmake --build build --config Release --target NEXUSPACE_VST3 --parallel 4
+
+      - name: Verify Intel binary and deployment target
+        shell: bash
+        run: |
+          set -euo pipefail
+          PLUGIN="$(find build -type d -name 'NEXUSPACE.vst3' -print -quit)"
+          if [ -z "$PLUGIN" ]; then
+            echo "NEXUSPACE.vst3 was not produced"
+            exit 1
+          fi
+          BIN="$PLUGIN/Contents/MacOS/NEXUSPACE"
+          test -f "$BIN"
+          file "$BIN"
+          file "$BIN" | grep -q 'x86_64'
+          echo "--- minimum macOS load command ---"
+          otool -l "$BIN" | grep -A5 -E 'LC_BUILD_VERSION|LC_VERSION_MIN_MACOSX' || true
+          echo "PLUGIN_PATH=$PLUGIN" >> "$GITHUB_ENV"
+
+      - name: Package constant build artifact
+        shell: bash
+        run: |
+          rm -f NEXUSPACE-macOS.zip
+          ditto -c -k --sequesterRsrc --keepParent "$PLUGIN_PATH" NEXUSPACE-macOS.zip
+          shasum -a 256 NEXUSPACE-macOS.zip > NEXUSPACE-macOS.sha256
+
+      - name: Upload NEXUSPACE macOS build
+        uses: actions/upload-artifact@v4
+        with:
+          name: NEXUSPACE-macOS
+          path: |
+            NEXUSPACE-macOS.zip
+            NEXUSPACE-macOS.sha256
+          if-no-files-found: error
+          compression-level: 0
